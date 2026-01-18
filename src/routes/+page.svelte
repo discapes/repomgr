@@ -433,7 +433,7 @@
 		try {
 			if (token) {
 				// Use GraphQL API via server endpoint (includes commit counts)
-				const res = await fetch('/repomgr/api/repos', {
+				const res = await fetch('/api/repos', {
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
 					body: JSON.stringify({ token })
