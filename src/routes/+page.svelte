@@ -31,6 +31,27 @@
 		renderSnippet
 	} from '$lib/components/ui/data-table/index.js';
 
+	/*
+	 * Data Model
+	 *
+	 * There are three separate data sources that are combined for display and export:
+	 *
+	 * 1. GitHub Data (repos) - Fetched from GitHub API via "Fetch Repos" button.
+	 *    Stored in: localStorage 'repomgr_github'
+	 *
+	 * 2. Tofu URL Data (tofuUrls) - Pasted from `terraform output -json` via "Paste Tofu Output".
+	 *    Format: { "pages_urls": { "value": { "repo-name": "url", ... } } }
+	 *    Stored in: localStorage 'repomgr_tofu_urls'
+	 *
+	 * 3. Custom Data - Manually entered in the table UI.
+	 *    Includes: classes, repoClasses, customUrls, repoEnabled, repoDescriptions
+	 *    Stored in: localStorage 'repomgr_custom'
+	 *
+	 * The table displays combined data: URLs merge tofuUrls + customUrls, descriptions
+	 * show custom overrides with GitHub fallback. "Export Enabled Project Data" exports
+	 * this combined view for enabled repos.
+	 */
+
 	type Repo = {
 		name: string;
 		html_url: string;
@@ -45,17 +66,34 @@
 		commits?: number;
 	};
 
+	// GitHub data
 	let token = $state('');
 	let username = $state('');
 	let repos: Repo[] = $state([]);
 	let loading = $state(false);
 	let error = $state('');
 
+	// Tofu URL data (from terraform output)
+	let tofuUrls = $state<Record<string, string>>({});
+
+	// Custom data (manually entered)
 	let classes = $state<string[]>([]);
 	let repoClasses = $state<Record<string, string>>({});
-	let repoUrls = $state<Record<string, string[]>>({});
+	let customUrls = $state<Record<string, string[]>>({});
 	let repoEnabled = $state<Record<string, boolean>>({});
 	let repoDescriptions = $state<Record<string, string>>({});
+
+	// Combined URLs for display (tofu URL first, then custom URLs)
+	const combinedUrls = $derived.by(() => {
+		const result: Record<string, string[]> = {};
+		for (const [key, url] of Object.entries(tofuUrls)) {
+			if (url) result[key] = [url];
+		}
+		for (const [key, urls] of Object.entries(customUrls)) {
+			result[key] = [...(result[key] || []), ...urls];
+		}
+		return result;
+	});
 
 	function repoKey(r: Repo) {
 		return `${r.owner.login}/${r.name}`;
@@ -160,9 +198,9 @@
 		{
 			id: 'pages_url',
 			header: 'URL',
-			accessorFn: (row) => (repoUrls[row.name] ?? []).join(', '),
+			accessorFn: (row) => (combinedUrls[row.name] ?? []).join(', '),
 			cell: ({ row }) => {
-				const urls = repoUrls[row.original.name] ?? [];
+				const urls = combinedUrls[row.original.name] ?? [];
 				if (urls.length === 0) return '—';
 				const first = urls[0];
 				const extra = urls.length - 1;
@@ -300,90 +338,83 @@
 	onMount(() => {
 		token = localStorage.getItem('repomgr_token') ?? '';
 		username = localStorage.getItem('repomgr_username') ?? '';
-		const saved = localStorage.getItem('repomgr_repos');
-		if (saved) repos = JSON.parse(saved);
-		const savedClasses = localStorage.getItem('repomgr_classes');
-		if (savedClasses) classes = JSON.parse(savedClasses);
-		const savedRepoClasses = localStorage.getItem('repomgr_repo_classes');
-		if (savedRepoClasses) repoClasses = JSON.parse(savedRepoClasses);
-		const savedRepoUrls = localStorage.getItem('repomgr_repo_urls');
-		if (savedRepoUrls) {
-			const parsed = JSON.parse(savedRepoUrls);
-			// Migrate old single-string format to array format
-			for (const key of Object.keys(parsed)) {
-				if (typeof parsed[key] === 'string') {
-					parsed[key] = parsed[key] ? [parsed[key]] : [];
-				}
-			}
-			repoUrls = parsed;
+		const savedGithub = localStorage.getItem('repomgr_github');
+		if (savedGithub) repos = JSON.parse(savedGithub);
+		const savedTofuUrls = localStorage.getItem('repomgr_tofu_urls');
+		if (savedTofuUrls) tofuUrls = JSON.parse(savedTofuUrls);
+		const savedCustom = localStorage.getItem('repomgr_custom');
+		if (savedCustom) {
+			const data = JSON.parse(savedCustom);
+			classes = data.classes ?? [];
+			repoClasses = data.repoClasses ?? {};
+			customUrls = data.customUrls ?? {};
+			repoEnabled = data.repoEnabled ?? {};
+			repoDescriptions = data.repoDescriptions ?? {};
 		}
-		const savedRepoEnabled = localStorage.getItem('repomgr_repo_enabled');
-		if (savedRepoEnabled) repoEnabled = JSON.parse(savedRepoEnabled);
-		const savedRepoDescriptions = localStorage.getItem('repomgr_repo_descriptions');
-		if (savedRepoDescriptions) repoDescriptions = JSON.parse(savedRepoDescriptions);
 	});
 
-	function persist() {
+	function persistGithub() {
 		localStorage.setItem('repomgr_token', token);
 		localStorage.setItem('repomgr_username', username);
-		localStorage.setItem('repomgr_repos', JSON.stringify(repos));
+		localStorage.setItem('repomgr_github', JSON.stringify(repos));
 	}
 
-	function persistClasses() {
-		localStorage.setItem('repomgr_classes', JSON.stringify(classes));
-		localStorage.setItem('repomgr_repo_classes', JSON.stringify(repoClasses));
-		localStorage.setItem('repomgr_repo_urls', JSON.stringify(repoUrls));
-		localStorage.setItem('repomgr_repo_enabled', JSON.stringify(repoEnabled));
-		localStorage.setItem('repomgr_repo_descriptions', JSON.stringify(repoDescriptions));
+	function persistTofuUrls() {
+		localStorage.setItem('repomgr_tofu_urls', JSON.stringify(tofuUrls));
 	}
 
-	function exportClassData() {
+	function persistCustom() {
+		localStorage.setItem(
+			'repomgr_custom',
+			JSON.stringify({ classes, repoClasses, customUrls, repoEnabled, repoDescriptions })
+		);
+	}
+
+	function exportCustomData() {
 		return JSON.stringify(
-			{ classes, repoClasses, repoUrls, repoEnabled, repoDescriptions },
+			{ classes, repoClasses, customUrls, repoEnabled, repoDescriptions },
 			null,
 			2
 		);
 	}
 
-	function importClassData(data: string) {
+	function importCustomData(data: string) {
 		try {
 			const parsed = JSON.parse(data);
 			if (parsed.classes) classes = parsed.classes;
 			if (parsed.repoClasses) repoClasses = parsed.repoClasses;
-			if (parsed.repoUrls) {
-				// Migrate old single-string format to array format
-				const urls = parsed.repoUrls;
-				for (const key of Object.keys(urls)) {
-					if (typeof urls[key] === 'string') {
-						urls[key] = urls[key] ? [urls[key]] : [];
-					}
-				}
-				repoUrls = urls;
-			}
+			if (parsed.customUrls) customUrls = parsed.customUrls;
 			if (parsed.repoEnabled) repoEnabled = parsed.repoEnabled;
 			if (parsed.repoDescriptions) repoDescriptions = parsed.repoDescriptions;
-			// Handle pages_urls.value format (legacy single-string format)
-			if (parsed.pages_urls?.value) {
-				for (const [key, value] of Object.entries(parsed.pages_urls.value)) {
-					if (typeof value === 'string' && value) {
-						repoUrls[key] = [...(repoUrls[key] || []), value];
-					}
-				}
-			}
-			persistClasses();
+			persistCustom();
 		} catch {}
 	}
 
-	async function copyToClipboard() {
-		await navigator.clipboard.writeText(exportClassData());
+	function importTofuOutput(data: string) {
+		try {
+			const parsed = JSON.parse(data);
+			if (parsed.pages_urls?.value) {
+				tofuUrls = parsed.pages_urls.value;
+				persistTofuUrls();
+			}
+		} catch {}
 	}
 
-	async function pasteFromClipboard() {
+	async function copyCustomData() {
+		await navigator.clipboard.writeText(exportCustomData());
+	}
+
+	async function pasteCustomData() {
 		const text = await navigator.clipboard.readText();
-		importClassData(text);
+		importCustomData(text);
 	}
 
-	async function exportTableToClipboard() {
+	async function pasteTofuOutput() {
+		const text = await navigator.clipboard.readText();
+		importTofuOutput(text);
+	}
+
+	async function exportEnabledProjectData() {
 		const enabledRepos = repos.filter((r) => repoEnabled[repoKey(r)]);
 		const data = enabledRepos.map((repo) => {
 			const key = repoKey(repo);
@@ -391,7 +422,7 @@
 				Enabled: true,
 				Owner: repo.owner.login,
 				Name: repo.name,
-				URLs: repoUrls[repo.name] ?? [],
+				URLs: combinedUrls[repo.name] ?? [],
 				Language: repo.language ?? '',
 				Type: getType(repo),
 				Stars: repo.stargazers_count,
@@ -405,23 +436,23 @@
 		await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
 	}
 
-	function downloadClassData() {
-		const blob = new Blob([exportClassData()], { type: 'application/json' });
+	function downloadCustomData() {
+		const blob = new Blob([exportCustomData()], { type: 'application/json' });
 		const url = URL.createObjectURL(blob);
 		const a = document.createElement('a');
 		a.href = url;
-		a.download = `repomgr-${new Date().toISOString().slice(0, 10)}.json`;
+		a.download = `repomgr-custom-${new Date().toISOString().slice(0, 10)}.json`;
 		a.click();
 		URL.revokeObjectURL(url);
 	}
 
-	function uploadClassData() {
+	function uploadCustomData() {
 		const input = document.createElement('input');
 		input.type = 'file';
 		input.accept = '.json';
 		input.onchange = async () => {
 			const file = input.files?.[0];
-			if (file) importClassData(await file.text());
+			if (file) importCustomData(await file.text());
 		};
 		input.click();
 	}
@@ -457,7 +488,7 @@
 				}
 				repos = allRepos;
 			}
-			persist();
+			persistGithub();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to fetch repos';
 			repos = [];
@@ -473,11 +504,11 @@
 	<div class="mb-6 flex gap-4">
 		<div class="flex-1">
 			<Label for="token">Access Token (optional)</Label>
-			<Input id="token" type="password" bind:value={token} onblur={persist} placeholder="ghp_..." />
+			<Input id="token" type="password" bind:value={token} onblur={persistGithub} placeholder="ghp_..." />
 		</div>
 		<div class="flex-1">
 			<Label for="username">Username</Label>
-			<Input id="username" bind:value={username} onblur={persist} placeholder="octocat" />
+			<Input id="username" bind:value={username} onblur={persistGithub} placeholder="octocat" />
 		</div>
 		<div class="self-end">
 			<Button onclick={fetchRepos} disabled={loading || (!token && !username)}>
@@ -490,43 +521,60 @@
 		<p class="mb-4 text-red-500">{error}</p>
 	{/if}
 
-	<div class="mb-4 flex items-center gap-2">
-		<Input
-			placeholder="New class name..."
-			class="w-48"
-			onkeydown={(e) => {
-				if (e.key === 'Enter' && e.currentTarget.value.trim()) {
-					const name = e.currentTarget.value.trim();
-					if (!classes.includes(name)) {
-						classes = [...classes, name];
-						persistClasses();
-					}
-					e.currentTarget.value = '';
-				}
-			}}
-		/>
-		<span class="flex items-center gap-1 text-sm text-muted-foreground">
-			Classes:
-			{#each classes as cls}
-				<span class="inline-flex items-center rounded bg-muted py-0.5 ps-2 pe-1">
-					{cls}
-					<button
-						class="ml-1 rounded p-1 hover:bg-destructive/20 hover:text-destructive"
-						onclick={() => {
-							classes = classes.filter((c) => c !== cls);
-							persistClasses();
-						}}>✕</button
-					>
-				</span>
-			{:else}
-				none
-			{/each}
-		</span>
-		<div class="ms-auto flex gap-2">
-			<Button variant="outline" size="sm" onclick={copyToClipboard}>Copy</Button>
-			<Button variant="outline" size="sm" onclick={pasteFromClipboard}>Paste</Button>
-			<Button variant="outline" size="sm" onclick={downloadClassData}>Download</Button>
-			<Button variant="outline" size="sm" onclick={uploadClassData}>Upload</Button>
+	<div class="mb-4 flex items-center gap-4">
+		<Popover.Root>
+			<Popover.Trigger>
+				{#snippet child({ props }: { props: Record<string, unknown> })}
+					<Button {...props} variant="outline" size="sm">
+						Classes ({classes.length})
+					</Button>
+				{/snippet}
+			</Popover.Trigger>
+			<Popover.Content class="w-64">
+				<div class="space-y-3">
+					<div class="text-sm font-medium">Classes</div>
+					{#each classes as cls}
+						<div class="flex items-center gap-2">
+							<span class="flex-1 text-sm">{cls}</span>
+							<Button
+								variant="ghost"
+								size="sm"
+								class="h-8 w-8 p-0"
+								onclick={() => {
+									classes = classes.filter((c) => c !== cls);
+									persistCustom();
+								}}
+							>
+								<XIcon class="size-4" />
+							</Button>
+						</div>
+					{:else}
+						<div class="text-sm text-muted-foreground">No classes defined</div>
+					{/each}
+					<Input
+						class="h-8 text-sm"
+						placeholder="Add class..."
+						onkeydown={(e) => {
+							if (e.key === 'Enter' && e.currentTarget.value.trim()) {
+								const name = e.currentTarget.value.trim();
+								if (!classes.includes(name)) {
+									classes = [...classes, name];
+									persistCustom();
+								}
+								e.currentTarget.value = '';
+							}
+						}}
+					/>
+				</div>
+			</Popover.Content>
+		</Popover.Root>
+		<Button variant="outline" size="sm" onclick={pasteTofuOutput}>Paste Tofu Output</Button>
+		<div class="ms-auto flex items-center gap-2">
+			<span class="text-xs text-muted-foreground">Custom Data:</span>
+			<Button variant="outline" size="sm" onclick={copyCustomData}>Copy</Button>
+			<Button variant="outline" size="sm" onclick={pasteCustomData}>Paste</Button>
+			<Button variant="outline" size="sm" onclick={downloadCustomData}>Download</Button>
+			<Button variant="outline" size="sm" onclick={uploadCustomData}>Upload</Button>
 		</div>
 	</div>
 
@@ -616,7 +664,7 @@
 				{/each}
 			</Select.Content>
 		</Select.Root>
-		<Button variant="outline" class="ms-auto" onclick={exportTableToClipboard}>Export Table</Button>
+		<Button variant="outline" class="ms-auto" onclick={exportEnabledProjectData}>Export Enabled Project Data</Button>
 		<DropdownMenu.Root>
 			<DropdownMenu.Trigger>
 				{#snippet child({ props }: { props: Record<string, unknown> })}
@@ -679,7 +727,7 @@
 									? () => {
 											repoEnabled[repoKey(row.original)] = !repoEnabled[repoKey(row.original)];
 											repoEnabled = { ...repoEnabled };
-											persistClasses();
+											persistCustom();
 										}
 									: undefined}
 							>
@@ -694,9 +742,11 @@
 									</div>
 								{:else if cell.column.id === 'pages_url'}
 									{@const repoName = row.original.name}
-									{@const urls = repoUrls[repoName] ?? []}
-									{@const firstUrl = urls[0] ?? ''}
-									{@const extraCount = urls.length > 1 ? urls.length - 1 : 0}
+									{@const tofuUrl = tofuUrls[repoName] ?? ''}
+									{@const repoCustomUrls = customUrls[repoName] ?? []}
+									{@const allUrls = combinedUrls[repoName] ?? []}
+									{@const firstUrl = allUrls[0] ?? ''}
+									{@const extraCount = allUrls.length > 1 ? allUrls.length - 1 : 0}
 									<Popover.Root>
 										<Popover.Trigger
 											class="group flex w-full cursor-pointer items-center gap-1 text-left"
@@ -715,25 +765,35 @@
 												<span class="text-muted-foreground">—</span>
 											{/if}
 											<LinkIcon
-												class="size-3 shrink-0 {urls.length > 0
+												class="size-3 shrink-0 {allUrls.length > 0
 													? 'text-blue-500'
 													: 'text-muted-foreground opacity-0 group-hover:opacity-100'}"
 											/>
 										</Popover.Trigger>
 										<Popover.Content class="w-80">
 											<div class="space-y-3">
-												<div class="text-sm font-medium">URLs</div>
-												{#each urls as url, i}
+												{#if tofuUrl}
+													<div>
+														<div class="text-xs font-medium text-muted-foreground">Tofu URL</div>
+														<a
+															href={tofuUrl.startsWith('http') ? tofuUrl : `https://${tofuUrl}`}
+															target="_blank"
+															class="text-sm text-blue-500 hover:underline">{tofuUrl}</a
+														>
+													</div>
+												{/if}
+												<div class="text-sm font-medium">Custom URLs</div>
+												{#each repoCustomUrls as url, i}
 													<div class="flex items-center gap-2">
 														<Input
 															class="h-8 flex-1 text-sm"
 															value={url}
 															oninput={(e) => {
-																const newUrls = [...urls];
+																const newUrls = [...repoCustomUrls];
 																newUrls[i] = e.currentTarget.value;
-																repoUrls[repoName] = newUrls;
-																repoUrls = { ...repoUrls };
-																persistClasses();
+																customUrls[repoName] = newUrls;
+																customUrls = { ...customUrls };
+																persistCustom();
 															}}
 														/>
 														<Button
@@ -741,10 +801,10 @@
 															size="sm"
 															class="h-8 w-8 p-0"
 															onclick={() => {
-																const newUrls = urls.filter((_, idx) => idx !== i);
-																repoUrls[repoName] = newUrls;
-																repoUrls = { ...repoUrls };
-																persistClasses();
+																const newUrls = repoCustomUrls.filter((_, idx) => idx !== i);
+																customUrls[repoName] = newUrls;
+																customUrls = { ...customUrls };
+																persistCustom();
 															}}
 														>
 															<XIcon class="size-4" />
@@ -753,12 +813,12 @@
 												{/each}
 												<Input
 													class="h-8 text-sm"
-													placeholder="Add URL..."
+													placeholder="Add custom URL..."
 													onkeydown={(e) => {
 														if (e.key === 'Enter' && e.currentTarget.value.trim()) {
-															repoUrls[repoName] = [...urls, e.currentTarget.value.trim()];
-															repoUrls = { ...repoUrls };
-															persistClasses();
+															customUrls[repoName] = [...repoCustomUrls, e.currentTarget.value.trim()];
+															customUrls = { ...customUrls };
+															persistCustom();
 															e.currentTarget.value = '';
 														}
 													}}
@@ -801,7 +861,7 @@
 													oninput={(e) => {
 														repoDescriptions[key] = e.currentTarget.value;
 														repoDescriptions = { ...repoDescriptions };
-														persistClasses();
+														persistCustom();
 													}}
 												></textarea>
 												{#if customDesc}
@@ -812,7 +872,7 @@
 														onclick={() => {
 															delete repoDescriptions[key];
 															repoDescriptions = { ...repoDescriptions };
-															persistClasses();
+															persistCustom();
 														}}
 													>
 														Clear Override
@@ -828,7 +888,7 @@
 										onValueChange={(v) => {
 											repoClasses[repoKey(row.original)] = v ?? '';
 											repoClasses = { ...repoClasses };
-											persistClasses();
+											persistCustom();
 										}}
 									>
 										<Select.Trigger class="h-7 w-32">
