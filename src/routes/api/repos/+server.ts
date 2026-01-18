@@ -95,6 +95,8 @@ export const POST: RequestHandler = async ({ request }) => {
 		console.log('GitHub API response status:', res.status);
 
 		if (!res.ok) {
+			const errorText = await res.text();
+			console.error('GitHub API error response:', errorText);
 			return json({ repos: [], error: `GitHub API error: ${res.status}` }, { status: res.status });
 		}
 
