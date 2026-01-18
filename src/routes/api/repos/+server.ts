@@ -87,7 +87,8 @@ export const POST: RequestHandler = async ({ request }) => {
 			method: 'POST',
 			headers: {
 				Authorization: `Bearer ${token}`,
-				'Content-Type': 'application/json'
+				'Content-Type': 'application/json',
+				'User-Agent': 'repomgr'
 			},
 			body: JSON.stringify({ query, variables: { cursor } })
 		});
